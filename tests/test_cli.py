@@ -113,6 +113,27 @@ class TestCLI:
         assert result.exit_code == 1
         resolve.assert_not_called()
 
+    @pytest.mark.parametrize("name", ["user@example.com", "team/dev", "a:b", "dev+admin"])
+    def test_valid_profile_names_accepted(
+        self, runner: CliRunner, mock_creds: Credentials, name: str
+    ) -> None:
+        with patch("aws_assume.cli.resolve_credentials", return_value=mock_creds):
+            result = runner.invoke(cli, [name])
+        assert result.exit_code == 0
+
+    @pytest.mark.parametrize("name", ["dev\n", "a]b", "[x", "tab\tname"])
+    def test_unsafe_profile_names_rejected(self, runner: CliRunner, name: str) -> None:
+        with patch("aws_assume.cli.resolve_credentials") as resolve:
+            result = runner.invoke(cli, [name])
+        assert result.exit_code == 1
+        resolve.assert_not_called()
+
+    def test_eval_and_json_are_exclusive(self, runner: CliRunner) -> None:
+        with patch("aws_assume.cli.resolve_credentials") as resolve:
+            result = runner.invoke(cli, ["dev", "--eval", "--json"])
+        assert result.exit_code == 1
+        resolve.assert_not_called()
+
     def test_list_profiles(self, runner: CliRunner) -> None:
         with patch("aws_assume.cli.list_profiles", return_value=["default", "dev", "prod"]):
             result = runner.invoke(cli, ["--list"])

@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Generated `RoleSessionName` is truncated to the STS 64-character limit.
 - `--version` reports the installed package version.
 - A clear error is shown when the AWS CLI is not installed.
+- Reported expiration is now the credentials' own expiry (previously the SSO login token's).
+- `--credentials` keeps comments and formatting of the rest of `~/.aws/credentials`.
+- Profile names are no longer limited to `[a-zA-Z0-9_.-]`; only whitespace, brackets and a
+  leading `-` are rejected.
+- `--eval` and `--json` together are rejected instead of producing unparsable output.
+
+### Security
+
+- All GitHub Actions are pinned to commit SHAs; checkouts no longer persist the token.
 
 ### Removed
 

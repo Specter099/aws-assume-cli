@@ -17,8 +17,9 @@ from aws_assume.core import (
     write_credentials_file,
 )
 
-# AWS profile names may contain alphanumerics, underscores, dots, and hyphens.
-_PROFILE_NAME_RE = re.compile(r"^[a-zA-Z0-9_.\\-]+$")
+# AWS accepts most characters in profile names. Reject only what could break out of an INI
+# section header or be mistaken for an option: whitespace, brackets, and a leading hyphen.
+_PROFILE_NAME_RE = re.compile(r"[^\s\[\]\-][^\s\[\]]*")
 
 
 def _print_error(msg: str) -> None:
@@ -117,11 +118,16 @@ def cli(
         sys.exit(0)
 
     for name in (profile, creds_profile):
-        if name is not None and not _PROFILE_NAME_RE.match(name):
+        if name is not None and not _PROFILE_NAME_RE.fullmatch(name):
             _print_error(
-                f"Invalid profile name '{name}'. Profile names must match [a-zA-Z0-9_.\\-]+"
+                f"Invalid profile name '{name}'. Profile names cannot contain whitespace "
+                "or brackets, or start with '-'"
             )
             sys.exit(1)
+
+    if output_eval and output_json:
+        _print_error("--eval and --json both write to stdout; choose one")
+        sys.exit(1)
 
     try:
         creds = resolve_credentials(

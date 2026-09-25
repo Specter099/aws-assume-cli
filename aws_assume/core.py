@@ -7,12 +7,12 @@ import json
 import os
 import re
 import shlex
-import stat
 import subprocess
 import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import boto3
@@ -145,7 +145,7 @@ def resolve_credentials(
     has_role_arn = "role_arn" in profile_config and "source_profile" in profile_config
 
     if has_sso and not has_role_arn:
-        return _resolve_sso_credentials(profile_name, profile_config, auto_login)
+        return _resolve_sso_credentials(profile_name, auto_login)
     elif has_role_arn:
         return _resolve_role_credentials(
             profile_name, profile_config, duration_seconds, auto_login, _seen
@@ -154,32 +154,21 @@ def resolve_credentials(
         return _resolve_boto3_credentials(profile_name)
 
 
-def _resolve_sso_credentials(
-    profile_name: str,
-    profile_config: dict[str, str],
-    auto_login: bool,
-) -> Credentials:
+def _resolve_sso_credentials(profile_name: str, auto_login: bool) -> Credentials:
     """Resolve credentials from an SSO profile."""
-    for attempt in range(2):
-        try:
-            session = boto3.Session(profile_name=profile_name)
-            creds = session.get_credentials().get_frozen_credentials()
-            break
-        except (TokenRetrievalError, ClientError) as e:
-            if auto_login and attempt == 0 and _is_sso_error(e):
-                _trigger_sso_login(profile_name)
-                continue
+    try:
+        return _session_credentials(profile_name)
+    except (TokenRetrievalError, ClientError) as e:
+        if not (auto_login and _is_sso_error(e)):
             raise RuntimeError(f"Failed to resolve SSO credentials: {e}") from e
-        except Exception as e:
-            raise RuntimeError(f"Failed to resolve SSO credentials: {e}") from e
+    except Exception as e:
+        raise RuntimeError(f"Failed to resolve SSO credentials: {e}") from e
 
-    return Credentials(
-        access_key_id=creds.access_key,
-        secret_access_key=creds.secret_key,
-        session_token=creds.token or "",
-        expiration=_get_sso_expiration(profile_config) or "unknown",
-        profile_name=profile_name,
-    )
+    _trigger_sso_login(profile_name)
+    try:
+        return _session_credentials(profile_name)
+    except Exception as e:
+        raise RuntimeError(f"Failed to resolve SSO credentials after login: {e}") from e
 
 
 def _resolve_role_credentials(
@@ -238,38 +227,29 @@ def _resolve_role_credentials(
 def _resolve_boto3_credentials(profile_name: str) -> Credentials:
     """Fallback: resolve via boto3 session directly."""
     try:
-        session = boto3.Session(profile_name=profile_name)
-        creds = session.get_credentials().get_frozen_credentials()
-        return Credentials(
-            access_key_id=creds.access_key,
-            secret_access_key=creds.secret_key,
-            session_token=creds.token or "",
-            expiration="unknown",
-            profile_name=profile_name,
-        )
+        return _session_credentials(profile_name)
     except Exception as e:
         raise RuntimeError(
             f"Failed to resolve credentials for profile '{profile_name}': {e}"
         ) from e
 
 
-def _get_sso_expiration(profile_config: dict[str, str]) -> str | None:
-    """Read SSO token expiration from the SSO cache files in ~/.aws/sso/cache/."""
-    start_url = profile_config.get("sso_start_url", "")
-    sso_session_name = profile_config.get("sso_session", "")
-    cache_dir = Path.home() / ".aws" / "sso" / "cache"
-
-    for cache_file in sorted(cache_dir.glob("*.json")):
-        try:
-            data = json.loads(cache_file.read_text())
-        except (OSError, ValueError):
-            continue
-        if (start_url and data.get("startUrl") == start_url) or (
-            sso_session_name and data.get("sessionName") == sso_session_name
-        ):
-            if data.get("expiresAt"):
-                return str(data["expiresAt"])
-    return None
+def _session_credentials(profile_name: str) -> Credentials:
+    """Resolve credentials through a boto3 session for the profile."""
+    credentials = boto3.Session(profile_name=profile_name).get_credentials()
+    if credentials is None:
+        raise RuntimeError(f"No credentials found for profile '{profile_name}'")
+    frozen = credentials.get_frozen_credentials()
+    # botocore exposes the expiry of refreshable (SSO, role, IMDS) credentials only via this
+    # private attribute; static credentials have none.
+    expiry = getattr(credentials, "_expiry_time", None)
+    return Credentials(
+        access_key_id=frozen.access_key,
+        secret_access_key=frozen.secret_key,
+        session_token=frozen.token or "",
+        expiration=expiry.isoformat() if isinstance(expiry, datetime) else "unknown",
+        profile_name=profile_name,
+    )
 
 
 def _is_sso_error(e: Exception) -> bool:
@@ -282,35 +262,62 @@ def _is_sso_error(e: Exception) -> bool:
     return False
 
 
+_SECTION_RE = re.compile(r"^\s*\[([^\]]+)\]\s*$")
+
+
+def _replace_section(text: str, name: str, block: list[str]) -> str:
+    """Replace (or append) an INI section, leaving every other line untouched.
+
+    Comments and blank lines inside the replaced section are kept; its key lines are dropped.
+    """
+    out: list[str] = []
+    in_target = replaced = False
+    for line in text.splitlines():
+        match = _SECTION_RE.match(line)
+        if match:
+            in_target = match.group(1).strip() == name
+            if in_target:
+                if not replaced:
+                    out.extend(block)
+                    replaced = True
+                continue
+        elif in_target and line.strip() and not line.lstrip().startswith(("#", ";")):
+            continue
+        out.append(line)
+    if not replaced:
+        if out and out[-1].strip():
+            out.append("")
+        out.extend(block)
+    return "\n".join(out) + "\n"
+
+
 def write_credentials_file(creds: Credentials, profile_name: str = "default") -> Path:
-    """Write credentials to ~/.aws/credentials under the given profile name."""
+    """Write credentials to ~/.aws/credentials under the given profile name.
+
+    Other profiles, comments, and formatting in the file are preserved.
+    """
     creds_path = _get_aws_credentials_path()
     creds_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = creds_path.read_text() if creds_path.exists() else ""
 
-    config = configparser.RawConfigParser()
-    if creds_path.exists():
-        config.read(creds_path)
-
-    section_data: dict[str, str] = {
-        "aws_access_key_id": creds.access_key_id,
-        "aws_secret_access_key": creds.secret_access_key,
-    }
+    block = [
+        f"[{profile_name}]",
+        f"aws_access_key_id = {creds.access_key_id}",
+        f"aws_secret_access_key = {creds.secret_access_key}",
+    ]
     if creds.session_token:
-        section_data["aws_session_token"] = creds.session_token
-    config[profile_name] = section_data
+        block.append(f"aws_session_token = {creds.session_token}")
 
-    # Write to a temp file with 0600 permissions, then atomically replace the target
+    # Write to a temp file (mkstemp creates it 0600), then atomically replace the target
     tmp_fd, tmp_name = tempfile.mkstemp(dir=creds_path.parent, prefix=".aws-assume-")
-    tmp_path = Path(tmp_name)
     try:
-        os.fchmod(tmp_fd, stat.S_IRUSR | stat.S_IWUSR)
         with os.fdopen(tmp_fd, "w") as f:
-            config.write(f)
+            f.write(_replace_section(existing, profile_name, block))
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_name, creds_path)
     except Exception:
-        tmp_path.unlink(missing_ok=True)
+        Path(tmp_name).unlink(missing_ok=True)
         raise
 
     return creds_path

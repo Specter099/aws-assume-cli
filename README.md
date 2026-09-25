@@ -66,6 +66,8 @@ region = us-east-1
 
 **SSO + role chaining** — the source profile itself uses SSO. `aws-assume` handles the chain automatically.
 
+Any other profile (static keys, `credential_source`, `credential_process`, web identity) is resolved by boto3.
+
 ## Output modes
 
 | Flag | Output | Use case |
@@ -74,6 +76,10 @@ region = us-east-1
 | `--json` | JSON object | Scripting, piping |
 | `--env-file PATH` | Docker `.env` format | `docker run --env-file .env ...` |
 | `--credentials` | `~/.aws/credentials` | SDK / tool compatibility |
+
+`--eval` and `--json` both write to stdout and cannot be combined. Files are written with `0600`
+permissions; `--credentials` replaces only the target profile and keeps the rest of the file,
+including comments.
 
 ## Development
 
