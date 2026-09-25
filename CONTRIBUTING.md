@@ -54,7 +54,7 @@ ruff format --check .
 
 ## Reporting Bugs
 
-Use the [bug report template](https://github.com/Specter099/aws-assume/issues/new?template=bug_report.yml) to file a bug. Include:
+Use the [bug report template](https://github.com/Specter099/aws-assume-cli/issues/new?template=bug_report.yml) to file a bug. Include:
 
 - Steps to reproduce
 - Expected vs. actual behavior
@@ -62,7 +62,7 @@ Use the [bug report template](https://github.com/Specter099/aws-assume/issues/ne
 
 ## Requesting Features
 
-Use the [feature request template](https://github.com/Specter099/aws-assume/issues/new?template=feature_request.yml). Explain:
+Use the [feature request template](https://github.com/Specter099/aws-assume-cli/issues/new?template=feature_request.yml). Explain:
 
 - The problem you're trying to solve
 - Your proposed solution

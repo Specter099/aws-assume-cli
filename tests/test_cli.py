@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 from click.testing import CliRunner
 
+from aws_assume import __version__
 from aws_assume.cli import cli
 from aws_assume.core import Credentials
 
@@ -37,7 +38,7 @@ class TestCLI:
     def test_version(self, runner: CliRunner) -> None:
         result = runner.invoke(cli, ["--version"])
         assert result.exit_code == 0
-        assert "0.1.0" in result.output
+        assert __version__ in result.output
 
     def test_eval_output_default(self, runner: CliRunner, mock_creds: Credentials) -> None:
         with patch("aws_assume.cli.resolve_credentials", return_value=mock_creds):
@@ -79,6 +80,59 @@ class TestCLI:
             runner.invoke(cli, ["dev", "--env-file", str(env_file)])
         mode = env_file.stat().st_mode & 0o777
         assert mode == 0o600, f"Expected 0600, got {oct(mode)}"
+
+    def test_env_file_tightens_existing_permissions(
+        self, runner: CliRunner, mock_creds: Credentials, tmp_path: Path
+    ) -> None:
+        env_file = tmp_path / ".env"
+        env_file.write_text("OLD=1\n")
+        env_file.chmod(0o644)
+        with patch("aws_assume.cli.resolve_credentials", return_value=mock_creds):
+            result = runner.invoke(cli, ["dev", "--env-file", str(env_file)])
+        assert result.exit_code == 0
+        assert env_file.stat().st_mode & 0o777 == 0o600
+        assert "OLD=1" not in env_file.read_text()
+
+    def test_env_file_refuses_symlink(
+        self, runner: CliRunner, mock_creds: Credentials, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "target"
+        target.write_text("")
+        link = tmp_path / ".env"
+        link.symlink_to(target)
+        with patch("aws_assume.cli.resolve_credentials", return_value=mock_creds):
+            result = runner.invoke(cli, ["dev", "--env-file", str(link)])
+        assert result.exit_code == 1
+        assert target.read_text() == ""
+
+    def test_invalid_credentials_profile_rejected(self, runner: CliRunner) -> None:
+        with patch("aws_assume.cli.resolve_credentials") as resolve:
+            result = runner.invoke(
+                cli, ["dev", "--credentials", "--credentials-profile", "x]\n[default"]
+            )
+        assert result.exit_code == 1
+        resolve.assert_not_called()
+
+    @pytest.mark.parametrize("name", ["user@example.com", "team/dev", "a:b", "dev+admin"])
+    def test_valid_profile_names_accepted(
+        self, runner: CliRunner, mock_creds: Credentials, name: str
+    ) -> None:
+        with patch("aws_assume.cli.resolve_credentials", return_value=mock_creds):
+            result = runner.invoke(cli, [name])
+        assert result.exit_code == 0
+
+    @pytest.mark.parametrize("name", ["dev\n", "a]b", "[x", "tab\tname"])
+    def test_unsafe_profile_names_rejected(self, runner: CliRunner, name: str) -> None:
+        with patch("aws_assume.cli.resolve_credentials") as resolve:
+            result = runner.invoke(cli, [name])
+        assert result.exit_code == 1
+        resolve.assert_not_called()
+
+    def test_eval_and_json_are_exclusive(self, runner: CliRunner) -> None:
+        with patch("aws_assume.cli.resolve_credentials") as resolve:
+            result = runner.invoke(cli, ["dev", "--eval", "--json"])
+        assert result.exit_code == 1
+        resolve.assert_not_called()
 
     def test_list_profiles(self, runner: CliRunner) -> None:
         with patch("aws_assume.cli.list_profiles", return_value=["default", "dev", "prod"]):

@@ -8,27 +8,18 @@ Releases are automatically published to PyPI when you create a GitHub release.
 
 1. Go to [pypi.org](https://pypi.org/account/register/) and create an account (or log in).
 
-2. Create a PyPI project for `aws-assume` by doing a manual upload first (see [Manual Publishing](#manual-publishing) below), or reserve the name.
+2. Create a PyPI project for `aws-assume-cli` by doing a manual upload first (see [Manual Publishing](#manual-publishing) below), or reserve the name.
 
-3. Configure Trusted Publishing on **TestPyPI**:
-   - Go to [test.pypi.org](https://test.pypi.org) > your project > **Settings** > **Publishing**
-   - Add a new **GitHub** publisher:
-     - **Owner**: `Specter099`
-     - **Repository**: `aws-assume`
-     - **Workflow name**: `publish.yml`
-     - **Environment name**: `testpypi`
-
-4. Configure Trusted Publishing on **PyPI**:
+3. Configure Trusted Publishing on **PyPI**:
    - Go to [pypi.org](https://pypi.org) > your project > **Settings** > **Publishing**
    - Add a new **GitHub** publisher:
      - **Owner**: `Specter099`
-     - **Repository**: `aws-assume`
+     - **Repository**: `aws-assume-cli`
      - **Workflow name**: `publish.yml`
      - **Environment name**: `pypi`
 
-5. Create GitHub environments:
+4. Create a GitHub environment:
    - Go to your repo **Settings** > **Environments**
-   - Create an environment named `testpypi`
    - Create an environment named `pypi`
      - Add a required reviewer for production safety
      - Optionally restrict deployment branches to tags only
@@ -74,8 +65,7 @@ If you need to publish manually (e.g., for the first upload):
 
 ### Testing with TestPyPI
 
-TestPyPI is published automatically as part of the release workflow (before PyPI).
-To test manually without affecting the real package index:
+The release workflow publishes only to PyPI. To test without affecting the real package index:
 
 1. Create an account at [test.pypi.org](https://test.pypi.org/account/register/).
 
@@ -86,7 +76,7 @@ To test manually without affecting the real package index:
 
 3. Test the install:
    ```bash
-   pipx install --pip-args="--index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/" aws-assume
+   pipx install --pip-args="--index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/" aws-assume-cli
    ```
 
 ## Versioning

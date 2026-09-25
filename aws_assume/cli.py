@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import os
 import re
-import stat
 import sys
 from pathlib import Path
 
@@ -17,8 +17,9 @@ from aws_assume.core import (
     write_credentials_file,
 )
 
-# AWS profile names may contain alphanumerics, underscores, dots, and hyphens.
-_PROFILE_NAME_RE = re.compile(r"^[a-zA-Z0-9_.\\-]+$")
+# AWS accepts most characters in profile names. Reject only what could break out of an INI
+# section header or be mistaken for an option: whitespace, brackets, and a leading hyphen.
+_PROFILE_NAME_RE = re.compile(r"[^\s\[\]\-][^\s\[\]]*")
 
 
 def _print_error(msg: str) -> None:
@@ -116,11 +117,16 @@ def cli(
         click.echo(ctx.get_help())
         sys.exit(0)
 
-    if not _PROFILE_NAME_RE.match(profile):
-        _print_error(
-            f"Invalid profile name '{profile}'. "
-            r"Profile names must match [a-zA-Z0-9_.\-]+"
-        )
+    for name in (profile, creds_profile):
+        if name is not None and not _PROFILE_NAME_RE.fullmatch(name):
+            _print_error(
+                f"Invalid profile name '{name}'. Profile names cannot contain whitespace "
+                "or brackets, or start with '-'"
+            )
+            sys.exit(1)
+
+    if output_eval and output_json:
+        _print_error("--eval and --json both write to stdout; choose one")
         sys.exit(1)
 
     try:
@@ -137,32 +143,37 @@ def cli(
         _print_error(str(e))
         sys.exit(1)
 
-    output_count = sum([output_eval, bool(env_file), write_creds, output_json])
-
-    if output_count == 0:
-        click.echo(creds.to_eval())
-        return
-
-    if output_eval:
+    if output_eval or not (env_file or write_creds or output_json):
         click.echo(creds.to_eval())
 
     if output_json:
         click.echo(creds.to_json())
 
-    if env_file:
-        env_path = Path(env_file)
-        env_path.write_text(creds.to_env_file())
-        env_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
-        _print_success(f"Credentials written to {env_path}")
+    try:
+        if env_file:
+            env_path = Path(env_file)
+            _write_private_file(env_path, creds.to_env_file() + "\n")
+            _print_success(f"Credentials written to {env_path}")
 
-    if write_creds:
-        target_profile = creds_profile or profile
-        creds_path = write_credentials_file(creds, profile_name=target_profile)
-        _print_success(f"Credentials written to {creds_path} under profile [{target_profile}]")
-        _print_info(f"Use: export AWS_PROFILE={target_profile}  or  --profile {target_profile}")
+        if write_creds:
+            target_profile = creds_profile or profile
+            creds_path = write_credentials_file(creds, profile_name=target_profile)
+            _print_success(f"Credentials written to {creds_path} under profile [{target_profile}]")
+            _print_info(f"Use: export AWS_PROFILE={target_profile}  or  --profile {target_profile}")
+    except OSError as e:
+        _print_error(f"Failed to write credentials: {e}")
+        sys.exit(1)
 
     if creds.expiration and creds.expiration != "unknown":
         _print_info(f"Expires: {creds.expiration}")
+
+
+def _write_private_file(path: Path, content: str) -> None:
+    """Write content to path with 0600 permissions, never exposing it with looser ones."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as f:
+        os.fchmod(f.fileno(), 0o600)  # tighten a pre-existing file before writing secrets
+        f.write(content)
 
 
 def _cmd_list() -> None:

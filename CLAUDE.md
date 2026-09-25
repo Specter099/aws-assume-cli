@@ -61,7 +61,7 @@ pyproject.toml         # Build config, dependencies, ruff settings
 `core.py` resolves credentials through three paths based on profile config:
 1. **SSO profiles** (`sso_start_url`) — resolves via boto3 session, auto-triggers `aws sso login` on token expiry
 2. **Role assumption** (`role_arn` + `source_profile`) — recursively resolves source credentials, then calls `sts:AssumeRole`
-3. **Static/boto3 fallback** — direct boto3 session credential resolution
+3. **Static/boto3 fallback** — direct boto3 session credential resolution (also covers `role_arn` + `credential_source`)
 
 Cycle detection via `_seen` frozenset prevents infinite recursion in credential chains. Credential file writes use atomic temp-file replacement with 0600 permissions.
 
