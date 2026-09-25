@@ -27,15 +27,6 @@ class Credentials:
     expiration: str
     profile_name: str
 
-    def to_env_vars(self) -> dict[str, str]:
-        env: dict[str, str] = {
-            "AWS_ACCESS_KEY_ID": self.access_key_id,
-            "AWS_SECRET_ACCESS_KEY": self.secret_access_key,
-        }
-        if self.session_token:
-            env["AWS_SESSION_TOKEN"] = self.session_token
-        return env
-
     def to_eval(self) -> str:
         """Return shell export statements for eval, safely quoted with shlex."""
         lines = [
@@ -115,10 +106,15 @@ def _trigger_sso_login(profile_name: str) -> None:
     sys.stderr.write(
         f"SSO session expired or missing. Logging in for profile '{profile_name}'...\n"
     )
-    result = subprocess.run(
-        ["aws", "sso", "login", "--profile", profile_name],
-        check=False,
-    )
+    # Send the aws CLI's output to stderr: stdout is captured by `eval $(aws-assume ...)`.
+    try:
+        result = subprocess.run(
+            ["aws", "sso", "login", "--profile", profile_name],
+            stdout=sys.stderr,
+            check=False,
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError("AWS CLI not found on PATH; it is required for 'aws sso login'") from e
     if result.returncode != 0:
         raise RuntimeError(f"SSO login failed for profile '{profile_name}'")
 
@@ -146,7 +142,7 @@ def resolve_credentials(
     profile_config = _get_profile_config(profile_name)
 
     has_sso = "sso_start_url" in profile_config or "sso_session" in profile_config
-    has_role_arn = "role_arn" in profile_config
+    has_role_arn = "role_arn" in profile_config and "source_profile" in profile_config
 
     if has_sso and not has_role_arn:
         return _resolve_sso_credentials(profile_name, profile_config, auto_login)
@@ -168,37 +164,22 @@ def _resolve_sso_credentials(
         try:
             session = boto3.Session(profile_name=profile_name)
             creds = session.get_credentials().get_frozen_credentials()
-            expiration = _get_sso_expiration(session) or "unknown"
-            return Credentials(
-                access_key_id=creds.access_key,
-                secret_access_key=creds.secret_key,
-                session_token=creds.token or "",
-                expiration=expiration,
-                profile_name=profile_name,
-            )
-        except TokenRetrievalError as e:
-            if auto_login and attempt == 0:
+            break
+        except (TokenRetrievalError, ClientError) as e:
+            if auto_login and attempt == 0 and _is_sso_error(e):
                 _trigger_sso_login(profile_name)
                 continue
-            raise RuntimeError("Failed to resolve SSO credentials: token expired") from e
-        except ClientError as e:
-            code = e.response.get("Error", {}).get("Code", "")
-            if (
-                auto_login
-                and attempt == 0
-                and code
-                in (
-                    "UnauthorizedException",
-                    "ExpiredTokenException",
-                )
-            ):
-                _trigger_sso_login(profile_name)
-                continue
-            raise RuntimeError(f"Failed to resolve SSO credentials: {code}") from e
+            raise RuntimeError(f"Failed to resolve SSO credentials: {e}") from e
         except Exception as e:
-            raise RuntimeError("Failed to resolve SSO credentials") from e
+            raise RuntimeError(f"Failed to resolve SSO credentials: {e}") from e
 
-    raise RuntimeError("SSO credential resolution failed after login attempt.")
+    return Credentials(
+        access_key_id=creds.access_key,
+        secret_access_key=creds.secret_key,
+        session_token=creds.token or "",
+        expiration=_get_sso_expiration(profile_config) or "unknown",
+        profile_name=profile_name,
+    )
 
 
 def _resolve_role_credentials(
@@ -210,10 +191,10 @@ def _resolve_role_credentials(
 ) -> Credentials:
     """Resolve credentials by assuming a role, using source_profile as the base."""
     role_arn = profile_config["role_arn"]
-    source_profile = profile_config.get("source_profile", "default")
+    source_profile = profile_config["source_profile"]
 
     # Sanitize profile_name for RoleSessionName (STS constraint: [\w+=,.@-]{2,64})
-    safe_name = re.sub(r"[^\w+=,.@-]", "-", profile_name)
+    safe_name = re.sub(r"[^\w+=,.@-]", "-", profile_name)[:40]
     role_session_name = profile_config.get(
         "role_session_name",
         f"aws-assume-{safe_name}-{int(time.time())}",
@@ -267,43 +248,27 @@ def _resolve_boto3_credentials(profile_name: str) -> Credentials:
             profile_name=profile_name,
         )
     except Exception as e:
-        raise RuntimeError(f"Failed to resolve credentials for profile '{profile_name}'") from e
+        raise RuntimeError(
+            f"Failed to resolve credentials for profile '{profile_name}': {e}"
+        ) from e
 
 
-def _get_sso_expiration(session: boto3.Session) -> str | None:
-    """Read SSO token expiration from the public SSO cache files in ~/.aws/sso/cache/."""
-    try:
-        profile_name = session.profile_name
-        if not profile_name:
-            return None
+def _get_sso_expiration(profile_config: dict[str, str]) -> str | None:
+    """Read SSO token expiration from the SSO cache files in ~/.aws/sso/cache/."""
+    start_url = profile_config.get("sso_start_url", "")
+    sso_session_name = profile_config.get("sso_session", "")
+    cache_dir = Path.home() / ".aws" / "sso" / "cache"
 
-        config = configparser.RawConfigParser()
-        config.read(_get_aws_config_path())
-        section = "default" if profile_name == "default" else f"profile {profile_name}"
-        if section not in config:
-            return None
-
-        prof = dict(config[section])
-        start_url = prof.get("sso_start_url", "")
-        sso_session_name = prof.get("sso_session", "")
-
-        cache_dir = Path.home() / ".aws" / "sso" / "cache"
-        if not cache_dir.exists():
-            return None
-
-        for cache_file in sorted(cache_dir.glob("*.json")):
-            try:
-                data = json.loads(cache_file.read_text())
-                if (start_url and data.get("startUrl") == start_url) or (
-                    sso_session_name and data.get("sessionName") == sso_session_name
-                ):
-                    expires_at = data.get("expiresAt")
-                    if expires_at:
-                        return str(expires_at)
-            except Exception:
-                continue
-    except Exception:
-        pass
+    for cache_file in sorted(cache_dir.glob("*.json")):
+        try:
+            data = json.loads(cache_file.read_text())
+        except (OSError, ValueError):
+            continue
+        if (start_url and data.get("startUrl") == start_url) or (
+            sso_session_name and data.get("sessionName") == sso_session_name
+        ):
+            if data.get("expiresAt"):
+                return str(data["expiresAt"])
     return None
 
 
@@ -341,6 +306,8 @@ def write_credentials_file(creds: Credentials, profile_name: str = "default") ->
         os.fchmod(tmp_fd, stat.S_IRUSR | stat.S_IWUSR)
         with os.fdopen(tmp_fd, "w") as f:
             config.write(f)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp_name, creds_path)
     except Exception:
         tmp_path.unlink(missing_ok=True)

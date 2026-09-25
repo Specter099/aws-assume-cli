@@ -4,6 +4,9 @@ on:
   release:
     types: [published]
 
+permissions:
+  contents: read
+
 jobs:
   # ── 1. Run the full test suite before publishing ──────────────────────────
   test:
@@ -25,7 +28,9 @@ jobs:
           pip install ruff pytest
 
       - name: Lint with ruff
-        run: ruff check .
+        run: |
+          ruff check .
+          ruff format --check .
 
       - name: Run tests
         run: pytest

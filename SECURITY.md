@@ -12,7 +12,7 @@ If you discover a security vulnerability in `aws-assume-cli`, please report it r
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Instead, please report vulnerabilities via [GitHub Security Advisories](https://github.com/Specter099/aws-assume/security/advisories/new).
+Instead, please report vulnerabilities via [GitHub Security Advisories](https://github.com/Specter099/aws-assume-cli/security/advisories/new).
 
 ### What to include
 

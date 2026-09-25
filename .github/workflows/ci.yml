@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: lint
@@ -43,8 +46,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -e ".[dev]"
-          pip install pytest
+          pip install -e . pytest
 
       - name: Run tests
         run: pytest
