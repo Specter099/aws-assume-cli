@@ -4,27 +4,16 @@ on:
   schedule:
     - cron: "0 6 * * *"
 
-permissions:
-  issues: write
-  pull-requests: write
+permissions: {}
 
 jobs:
   stale:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
-        with:
-          stale-issue-message: >
-            This issue has been automatically marked as stale because it has not
-            had activity in 60 days. It will be closed in 14 days if no further
-            activity occurs. If this issue is still relevant, please leave a
-            comment or remove the stale label.
-          stale-pr-message: >
-            This pull request has been automatically marked as stale because it
-            has not had activity in 30 days. It will be closed in 14 days if no
-            further activity occurs.
-          days-before-issue-stale: 60
-          days-before-pr-stale: 30
-          days-before-close: 14
-          exempt-issue-labels: "pinned,security"
-          exempt-pr-labels: "pinned,security"
+    uses: Specter099/.github/.github/workflows/stale.yml@main
+    permissions:
+      issues: write
+      pull-requests: write
+    with:
+      days-before-issue-stale: 60
+      days-before-pr-stale: 30
+      days-before-close: 14
+      exempt-labels: "pinned,security"
